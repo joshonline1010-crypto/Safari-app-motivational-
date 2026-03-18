@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="VideoVault">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.json">
+  <title>Video Vault</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif;
+      color: #fff;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ── Empty State ── */
+    #empty-state {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 1;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%);
+    }
+    #empty-state.hidden { display: none; }
+    #empty-state .logo {
+      font-size: 64px; margin-bottom: 16px;
+    }
+    #empty-state h1 {
+      font-size: 28px; font-weight: 700; margin-bottom: 8px;
+    }
+    #empty-state p {
+      color: #888; font-size: 15px; margin-bottom: 32px; text-align: center; padding: 0 40px;
+    }
+    #empty-state button {
+      background: #ff2d55; color: #fff; border: none;
+      padding: 16px 40px; border-radius: 50px; font-size: 17px;
+      font-weight: 600; cursor: pointer;
+      box-shadow: 0 4px 24px rgba(255,45,85,0.4);
+    }
+    #empty-state button:active { transform: scale(0.96); }
+
+    /* ── Feed Container ── */
+    #feed {
+      height: 100%;
+      overflow-y: scroll;
+      scroll-snap-type: y mandatory;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ── Video Slide ── */
+    .slide {
+      height: 100%;
+      width: 100%;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+    }
+    .slide video {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* ── Tap to play/pause overlay ── */
+    .play-icon {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%) scale(0);
+      font-size: 72px;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.2s ease;
+    }
+    .play-icon.show {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 0.8;
+    }
+
+    /* ── Side Actions ── */
+    .actions {
+      position: absolute;
+      right: 12px;
+      bottom: calc(100px + var(--safe-bottom));
+      display: flex; flex-direction: column;
+      align-items: center; gap: 20px;
+      z-index: 5;
+    }
+    .actions button {
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: none; color: #fff;
+      width: 48px; height: 48px; border-radius: 50%;
+      font-size: 22px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .actions button:active { transform: scale(0.9); }
+    .actions button.liked { background: #ff2d55; }
+
+    /* ── Video Title ── */
+    .video-title {
+      position: absolute;
+      left: 16px; right: 72px;
+      bottom: calc(100px + var(--safe-bottom));
+      z-index: 5;
+    }
+    .video-title span {
+      font-size: 15px; font-weight: 600;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .video-title .tag {
+      display: inline-block;
+      background: rgba(255,255,255,0.2);
+      backdrop-filter: blur(6px);
+      padding: 3px 10px; border-radius: 12px;
+      font-size: 12px; font-weight: 500;
+      margin-top: 6px;
+    }
+
+    /* ── Bottom Nav ── */
+    #bottom-nav {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      height: calc(72px + var(--safe-bottom));
+      padding-bottom: var(--safe-bottom);
+      background: rgba(10,10,10,0.95);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-top: 0.5px solid rgba(255,255,255,0.1);
+      display: flex; align-items: center; justify-content: space-around;
+      z-index: 10;
+    }
+    .nav-btn {
+      background: none; border: none; color: #888;
+      font-size: 11px; cursor: pointer;
+      display: flex; flex-direction: column;
+      align-items: center; gap: 4px;
+    }
+    .nav-btn .icon { font-size: 24px; }
+    .nav-btn.active { color: #fff; }
+    #add-btn {
+      background: #ff2d55;
+      width: 44px; height: 32px;
+      border: none; border-radius: 8px;
+      font-size: 24px; color: #fff;
+      cursor: pointer; font-weight: 300;
+      box-shadow: 0 2px 12px rgba(255,45,85,0.4);
+    }
+    #add-btn:active { transform: scale(0.92); }
+
+    /* ── Edit Modal ── */
+    #edit-modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(10px);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    #edit-modal.open { display: flex; }
+    #edit-modal h2 { margin-bottom: 20px; font-size: 20px; }
+    #edit-modal input[type="text"],
+    #edit-modal select {
+      width: 100%; max-width: 340px;
+      padding: 14px 16px; border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.1);
+      color: #fff; font-size: 16px;
+      margin-bottom: 12px;
+      -webkit-appearance: none;
+    }
+    #edit-modal input::placeholder { color: #666; }
+    #edit-modal .modal-btns {
+      display: flex; gap: 12px; margin-top: 8px;
+      width: 100%; max-width: 340px;
+    }
+    #edit-modal .modal-btns button {
+      flex: 1; padding: 14px; border-radius: 12px;
+      border: none; font-size: 16px; font-weight: 600;
+      cursor: pointer;
+    }
+    #edit-modal .btn-cancel {
+      background: rgba(255,255,255,0.1); color: #fff;
+    }
+    #edit-modal .btn-save {
+      background: #ff2d55; color: #fff;
+    }
+
+    /* ── Counter Badge ── */
+    .counter {
+      position: fixed;
+      top: calc(12px + var(--safe-top));
+      right: 16px;
+      background: rgba(255,255,255,0.12);
+      backdrop-filter: blur(10px);
+      padding: 6px 14px; border-radius: 20px;
+      font-size: 13px; font-weight: 600;
+      z-index: 10;
+    }
+
+    /* ── Progress Bar ── */
+    .progress-bar {
+      position: absolute;
+      bottom: calc(72px + var(--safe-bottom));
+      left: 0; right: 0;
+      height: 3px;
+      background: rgba(255,255,255,0.15);
+      z-index: 6;
+    }
+    .progress-bar .fill {
+      height: 100%;
+      background: #ff2d55;
+      width: 0%;
+      transition: width 0.25s linear;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      top: calc(60px + var(--safe-top));
+      left: 50%; transform: translateX(-50%) translateY(-20px);
+      background: rgba(255,255,255,0.15);
+      backdrop-filter: blur(20px);
+      padding: 10px 24px; border-radius: 20px;
+      font-size: 14px; font-weight: 500;
+      opacity: 0; z-index: 200;
+      transition: all 0.3s ease;
+      pointer-events: none;
+    }
+    #toast.show {
+      opacity: 1; transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Empty State -->
+  <div id="empty-state">
+    <div class="logo">🎬</div>
+    <h1>Video Vault</h1>
+    <p>Upload motivational videos, TikToks, and tools you want to remember and rewatch.</p>
+    <button onclick="triggerUpload()">Upload Your First Video</button>
+  </div>
+
+  <!-- Video Feed -->
+  <div id="feed"></div>
+
+  <!-- Video Counter -->
+  <div class="counter" id="counter" style="display:none;"></div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <!-- Bottom Navigation -->
+  <div id="bottom-nav">
+    <button class="nav-btn active" onclick="scrollToTop()">
+      <span class="icon">&#9750;</span>
+      <span>Feed</span>
+    </button>
+    <button id="add-btn" onclick="triggerUpload()">+</button>
+    <button class="nav-btn" onclick="showInfo()">
+      <span class="icon">&#9881;</span>
+      <span>Info</span>
+    </button>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal">
+    <h2>Edit Video</h2>
+    <input type="text" id="edit-title" placeholder="Video title...">
+    <select id="edit-tag">
+      <option value="">No tag</option>
+      <option value="Motivational">Motivational</option>
+      <option value="Tool">Tool</option>
+      <option value="TikTok">TikTok</option>
+      <option value="Mindset">Mindset</option>
+      <option value="Business">Business</option>
+      <option value="Fitness">Fitness</option>
+      <option value="Other">Other</option>
+    </select>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeEditModal()">Cancel</button>
+      <button class="btn-save" onclick="saveEdit()">Save</button>
+    </div>
+  </div>
+
+  <!-- Hidden file input -->
+  <input type="file" id="file-input" accept="video/*" multiple hidden>
+
+  <script>
+    // ── IndexedDB Setup ──
+    const DB_NAME = 'VideoVaultDB';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'videos';
+    let db;
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = e => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            store.createIndex('order', 'order');
+          }
+        };
+        req.onsuccess = e => { db = e.target.result; resolve(db); };
+        req.onerror = e => reject(e);
+      });
+    }
+
+    function getAllVideos() {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const videos = req.result.sort((a, b) => a.order - b.order);
+          resolve(videos);
+        };
+        req.onerror = e => reject(e);
+      });
+    }
+
+    function saveVideo(video) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.put(video);
+        tx.oncomplete = () => resolve();
+        tx.onerror = e => reject(e);
+      });
+    }
+
+    function deleteVideo(id) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = e => reject(e);
+      });
+    }
+
+    // ── App State ──
+    let videos = [];
+    let currentIndex = 0;
+    let editingId = null;
+
+    const feed = document.getElementById('feed');
+    const emptyState = document.getElementById('empty-state');
+    const counter = document.getElementById('counter');
+    const fileInput = document.getElementById('file-input');
+    const toast = document.getElementById('toast');
+
+    // ── Toast ──
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    // ── Upload ──
+    function triggerUpload() {
+      fileInput.click();
+    }
+
+    fileInput.addEventListener('change', async e => {
+      const files = Array.from(e.target.files);
+      if (!files.length) return;
+
+      for (const file of files) {
+        const blob = await file.arrayBuffer();
+        const video = {
+          id: Date.now() + '-' + Math.random().toString(36).slice(2, 9),
+          title: file.name.replace(/\.[^.]+$/, ''),
+          tag: '',
+          liked: false,
+          data: blob,
+          type: file.type,
+          order: videos.length,
+          lastPosition: 0
+        };
+        await saveVideo(video);
+        videos.push(video);
+      }
+
+      renderFeed();
+      showToast(`${files.length} video${files.length > 1 ? 's' : ''} added`);
+      fileInput.value = '';
+    });
+
+    // ── Render Feed ──
+    function renderFeed() {
+      if (videos.length === 0) {
+        emptyState.classList.remove('hidden');
+        counter.style.display = 'none';
+        feed.innerHTML = '';
+        return;
+      }
+      emptyState.classList.add('hidden');
+      counter.style.display = 'block';
+
+      feed.innerHTML = '';
+      videos.forEach((v, i) => {
+        const slide = document.createElement('div');
+        slide.className = 'slide';
+        slide.dataset.index = i;
+
+        const blob = new Blob([v.data], { type: v.type });
+        const url = URL.createObjectURL(blob);
+
+        slide.innerHTML = `
+          <video src="${url}" loop playsinline preload="metadata"></video>
+          <div class="play-icon">▶</div>
+          <div class="video-title">
+            <span>${escapeHtml(v.title)}</span>
+            ${v.tag ? `<div class="tag">${escapeHtml(v.tag)}</div>` : ''}
+          </div>
+          <div class="actions">
+            <button onclick="toggleLike('${v.id}')" class="${v.liked ? 'liked' : ''}" title="Like">♥</button>
+            <button onclick="openEditModal('${v.id}')" title="Edit">✎</button>
+            <button onclick="removeVideo('${v.id}')" title="Delete">✕</button>
+          </div>
+          <div class="progress-bar"><div class="fill"></div></div>
+        `;
+
+        const video = slide.querySelector('video');
+
+        // Tap to play/pause
+        video.addEventListener('click', () => {
+          const icon = slide.querySelector('.play-icon');
+          if (video.paused) {
+            video.play();
+            icon.textContent = '▶';
+          } else {
+            video.pause();
+            icon.textContent = '❚❚';
+          }
+          icon.classList.add('show');
+          setTimeout(() => icon.classList.remove('show'), 600);
+        });
+
+        // Progress bar
+        video.addEventListener('timeupdate', () => {
+          if (video.duration) {
+            const pct = (video.currentTime / video.duration) * 100;
+            slide.querySelector('.progress-bar .fill').style.width = pct + '%';
+          }
+        });
+
+        // Save position on pause
+        video.addEventListener('pause', () => {
+          v.lastPosition = video.currentTime;
+          saveVideo(v);
+        });
+
+        feed.appendChild(slide);
+      });
+
+      updateCounter();
+      autoplayVisible();
+    }
+
+    // ── Scroll / Autoplay ──
+    let scrollTimer;
+    feed.addEventListener('scroll', () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        autoplayVisible();
+        updateCounter();
+        saveScrollPosition();
+      }, 150);
+    });
+
+    function autoplayVisible() {
+      const slides = document.querySelectorAll('.slide');
+      slides.forEach((slide, i) => {
+        const rect = slide.getBoundingClientRect();
+        const video = slide.querySelector('video');
+        const visible = rect.top >= -100 && rect.top < window.innerHeight / 2;
+        if (visible) {
+          currentIndex = i;
+          if (videos[i] && videos[i].lastPosition) {
+            video.currentTime = videos[i].lastPosition;
+          }
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+    }
+
+    function updateCounter() {
+      if (videos.length > 0) {
+        counter.textContent = `${currentIndex + 1} / ${videos.length}`;
+      }
+    }
+
+    function saveScrollPosition() {
+      localStorage.setItem('vv_scroll', currentIndex);
+    }
+
+    function restoreScrollPosition() {
+      const saved = localStorage.getItem('vv_scroll');
+      if (saved !== null && videos.length > 0) {
+        const idx = Math.min(parseInt(saved), videos.length - 1);
+        const slides = document.querySelectorAll('.slide');
+        if (slides[idx]) {
+          setTimeout(() => {
+            slides[idx].scrollIntoView();
+            currentIndex = idx;
+            updateCounter();
+            autoplayVisible();
+          }, 100);
+        }
+      }
+    }
+
+    // ── Actions ──
+    async function toggleLike(id) {
+      const v = videos.find(v => v.id === id);
+      if (!v) return;
+      v.liked = !v.liked;
+      await saveVideo(v);
+      renderFeed();
+      showToast(v.liked ? 'Liked!' : 'Unliked');
+    }
+
+    function openEditModal(id) {
+      editingId = id;
+      const v = videos.find(v => v.id === id);
+      if (!v) return;
+      document.getElementById('edit-title').value = v.title;
+      document.getElementById('edit-tag').value = v.tag || '';
+      document.getElementById('edit-modal').classList.add('open');
+    }
+
+    function closeEditModal() {
+      document.getElementById('edit-modal').classList.remove('open');
+      editingId = null;
+    }
+
+    async function saveEdit() {
+      const v = videos.find(v => v.id === editingId);
+      if (!v) return;
+      v.title = document.getElementById('edit-title').value || 'Untitled';
+      v.tag = document.getElementById('edit-tag').value;
+      await saveVideo(v);
+      closeEditModal();
+      renderFeed();
+      showToast('Saved!');
+    }
+
+    async function removeVideo(id) {
+      if (!confirm('Delete this video?')) return;
+      await deleteVideo(id);
+      videos = videos.filter(v => v.id !== id);
+      renderFeed();
+      showToast('Video deleted');
+    }
+
+    function scrollToTop() {
+      feed.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function showInfo() {
+      const total = videos.length;
+      const liked = videos.filter(v => v.liked).length;
+      alert(`Video Vault\n\n${total} video${total !== 1 ? 's' : ''} saved\n${liked} liked\n\nTip: Tap a video to play/pause.\nSwipe up/down to scroll.\nAdd to Home Screen for the full app experience.`);
+    }
+
+    // ── Helpers ──
+    function escapeHtml(str) {
+      const el = document.createElement('span');
+      el.textContent = str;
+      return el.innerHTML;
+    }
+
+    // ── Init ──
+    async function init() {
+      await openDB();
+      videos = await getAllVideos();
+      renderFeed();
+      restoreScrollPosition();
+
+      // Register service worker
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
