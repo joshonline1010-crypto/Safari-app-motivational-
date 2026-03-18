@@ -71,11 +71,45 @@
       align-items: center;
       justify-content: center;
       background: #000;
+      opacity: 0.4;
+      transform: scale(0.95);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .slide.active {
+      opacity: 1;
+      transform: scale(1);
     }
     .slide video {
       width: 100%; height: 100%;
       object-fit: contain;
       background: #000;
+    }
+
+    /* ── Lazy-load placeholder for embeds ── */
+    .embed-placeholder {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      cursor: pointer;
+      gap: 12px;
+    }
+    .embed-placeholder .thumb {
+      width: 80%; max-width: 480px; aspect-ratio: 16/9;
+      border-radius: 12px; object-fit: cover;
+      background: rgba(255,255,255,0.05);
+    }
+    .embed-placeholder .play-btn {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: rgba(255,45,85,0.9);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      box-shadow: 0 4px 20px rgba(255,45,85,0.5);
+      position: absolute;
+    }
+    .embed-placeholder .embed-label {
+      font-size: 13px; color: #aaa; font-weight: 500;
+      margin-top: 4px;
     }
 
     /* ── Tap to play/pause overlay ── */
@@ -307,6 +341,34 @@
       background: #000;
     }
 
+    /* ── Upload Progress ── */
+    #upload-progress {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.9);
+      backdrop-filter: blur(20px);
+      padding: 28px 40px;
+      border-radius: 20px;
+      z-index: 300;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #upload-progress.show { display: flex; }
+    #upload-progress .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #ff2d55;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #upload-progress .progress-text {
+      font-size: 14px; color: #ccc; text-align: center;
+    }
+
     /* ── Toast ── */
     #toast {
       position: fixed;
@@ -343,6 +405,12 @@
 
   <!-- Toast -->
   <div id="toast"></div>
+
+  <!-- Upload Progress -->
+  <div id="upload-progress">
+    <div class="spinner"></div>
+    <div class="progress-text">Compressing video...</div>
+  </div>
 
   <!-- Bottom Navigation -->
   <div id="bottom-nav">
@@ -555,6 +623,122 @@
       showToast('Video link added!');
     }
 
+    // ── Video Compression ──
+    const uploadProgress = document.getElementById('upload-progress');
+    const progressText = uploadProgress.querySelector('.progress-text');
+
+    function compressVideo(file, targetBitrate = 1_500_000) {
+      return new Promise((resolve) => {
+        // Check if MediaRecorder + canvas re-encoding is supported
+        if (typeof MediaRecorder === 'undefined' || !file.type.startsWith('video/')) {
+          resolve(file);
+          return;
+        }
+
+        // Skip compression for small files (under 10MB)
+        if (file.size < 10 * 1024 * 1024) {
+          resolve(file);
+          return;
+        }
+
+        progressText.textContent = `Compressing ${file.name}...`;
+        uploadProgress.classList.add('show');
+
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.src = URL.createObjectURL(file);
+
+        video.onloadedmetadata = () => {
+          // Scale down if larger than 720p
+          let w = video.videoWidth;
+          let h = video.videoHeight;
+          const maxH = 720;
+          if (h > maxH) {
+            w = Math.round(w * (maxH / h));
+            h = maxH;
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+
+          const stream = canvas.captureStream(30);
+
+          // Try to capture audio too
+          try {
+            const audioCtx = new AudioContext();
+            const source = audioCtx.createMediaElementSource(video);
+            const dest = audioCtx.createMediaStreamDestination();
+            source.connect(dest);
+            source.connect(audioCtx.destination);
+            dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+          } catch (e) { /* no audio track or not supported */ }
+
+          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+            ? 'video/webm;codecs=vp9'
+            : MediaRecorder.isTypeSupported('video/webm')
+              ? 'video/webm'
+              : 'video/mp4';
+
+          let recorder;
+          try {
+            recorder = new MediaRecorder(stream, {
+              mimeType,
+              videoBitsPerSecond: targetBitrate
+            });
+          } catch (e) {
+            URL.revokeObjectURL(video.src);
+            uploadProgress.classList.remove('show');
+            resolve(file);
+            return;
+          }
+
+          const chunks = [];
+          recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+          recorder.onstop = () => {
+            URL.revokeObjectURL(video.src);
+            const compressed = new Blob(chunks, { type: mimeType });
+            // Only use compressed if it's actually smaller
+            if (compressed.size < file.size * 0.9) {
+              const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+              const newMB = (compressed.size / 1024 / 1024).toFixed(1);
+              progressText.textContent = `${sizeMB}MB → ${newMB}MB`;
+              setTimeout(() => uploadProgress.classList.remove('show'), 1200);
+              resolve(new File([compressed], file.name, { type: mimeType }));
+            } else {
+              uploadProgress.classList.remove('show');
+              resolve(file);
+            }
+          };
+
+          recorder.start();
+          video.currentTime = 0;
+          video.play();
+
+          const draw = () => {
+            if (video.ended || video.paused) {
+              recorder.stop();
+              return;
+            }
+            ctx.drawImage(video, 0, 0, w, h);
+            const pct = Math.round((video.currentTime / video.duration) * 100);
+            progressText.textContent = `Compressing... ${pct}%`;
+            requestAnimationFrame(draw);
+          };
+          video.onplay = draw;
+          video.onended = () => recorder.stop();
+        };
+
+        video.onerror = () => {
+          URL.revokeObjectURL(video.src);
+          uploadProgress.classList.remove('show');
+          resolve(file);
+        };
+      });
+    }
+
     // ── Upload ──
     function triggerUpload() {
       fileInput.click();
@@ -565,14 +749,16 @@
       if (!files.length) return;
 
       for (const file of files) {
-        const blob = await file.arrayBuffer();
+        // Compress large videos before storing
+        const processed = await compressVideo(file);
+        const blob = await processed.arrayBuffer();
         const video = {
           id: Date.now() + '-' + Math.random().toString(36).slice(2, 9),
           title: file.name.replace(/\.[^.]+$/, ''),
           tag: '',
           liked: false,
           data: blob,
-          type: file.type,
+          type: processed.type,
           order: videos.length,
           lastPosition: 0
         };
@@ -580,6 +766,7 @@
         videos.push(video);
       }
 
+      uploadProgress.classList.remove('show');
       renderFeed();
       showToast(`${files.length} video${files.length > 1 ? 's' : ''} added`);
       fileInput.value = '';
@@ -605,11 +792,17 @@
         const isLink = v.source === 'link';
 
         if (isLink && v.linkType !== 'direct') {
-          // YouTube or TikTok embed
+          // YouTube or TikTok — lazy-load: show placeholder, load iframe on tap
+          const thumbUrl = v.linkType === 'youtube'
+            ? `https://img.youtube.com/vi/${escapeHtml(v.embedUrl.split('/embed/')[1].split('?')[0])}/hqdefault.jpg`
+            : '';
+
           slide.innerHTML = `
-            <iframe src="${escapeHtml(v.embedUrl)}"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-              allowfullscreen playsinline></iframe>
+            <div class="embed-placeholder" data-embed-url="${escapeHtml(v.embedUrl)}">
+              ${thumbUrl ? `<img class="thumb" src="${thumbUrl}" alt="Thumbnail" loading="lazy">` : ''}
+              <div class="play-btn">&#9654;</div>
+              <span class="embed-label">Tap to load ${v.linkType === 'youtube' ? 'YouTube' : 'TikTok'}</span>
+            </div>
             <div class="video-title">
               <span>${escapeHtml(v.title)}</span>
               ${v.tag ? `<div class="tag">${escapeHtml(v.tag)}</div>` : ''}
@@ -620,6 +813,18 @@
               <button onclick="removeVideo('${v.id}')" title="Delete">&#10005;</button>
             </div>
           `;
+
+          // Tap placeholder to load iframe
+          const placeholder = slide.querySelector('.embed-placeholder');
+          placeholder.addEventListener('click', () => {
+            const embedUrl = placeholder.dataset.embedUrl;
+            const iframe = document.createElement('iframe');
+            iframe.src = embedUrl;
+            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen';
+            iframe.allowFullscreen = true;
+            iframe.setAttribute('playsinline', '');
+            placeholder.replaceWith(iframe);
+          });
         } else {
           // Local file or direct video link
           let src;
@@ -700,13 +905,18 @@
         const rect = slide.getBoundingClientRect();
         const video = slide.querySelector('video');
         const visible = rect.top >= -100 && rect.top < window.innerHeight / 2;
-        if (!video) {
-          // iframe embed — just track index
-          if (visible) currentIndex = i;
-          return;
-        }
+
+        // Transition effect: active slide scales up and fades in
         if (visible) {
+          slide.classList.add('active');
           currentIndex = i;
+        } else {
+          slide.classList.remove('active');
+        }
+
+        if (!video) return; // iframe embed — no autoplay needed
+
+        if (visible) {
           if (videos[i] && videos[i].lastPosition) {
             video.currentTime = videos[i].lastPosition;
           }
