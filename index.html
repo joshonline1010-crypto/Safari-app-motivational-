@@ -572,28 +572,42 @@
     // ── URL Parsing ──
     function parseVideoUrl(url) {
       url = url.trim();
-      // YouTube
-      let m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+      // YouTube (watch, embed, shorts, youtu.be)
+      let m = url.match(/(?:youtube\.com\/(?:watch\?.*v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
       if (m) return { type: 'youtube', id: m[1] };
-      // TikTok
+      // TikTok full URL
       m = url.match(/tiktok\.com\/@[^/]+\/video\/(\d+)/);
       if (m) return { type: 'tiktok', id: m[1], url: url };
+      // TikTok short URL (vm.tiktok.com/...)
+      if (url.match(/tiktok\.com\//)) return { type: 'tiktok-short', url: url };
+      // Instagram Reels
+      m = url.match(/instagram\.com\/(?:reel|reels|p)\/([a-zA-Z0-9_-]+)/);
+      if (m) return { type: 'instagram', id: m[1], url: url };
       // Direct video link
-      if (url.match(/\.(mp4|webm|mov|m4v)(\?|$)/i) || url.includes('video')) {
+      if (url.match(/\.(mp4|webm|mov|m4v)(\?|#|$)/i)) {
         return { type: 'direct', url: url };
       }
-      // Try as direct link anyway
-      return { type: 'direct', url: url };
+      // Fallback — treat as generic link
+      return { type: 'generic', url: url };
     }
 
     function getEmbedUrl(parsed) {
       if (parsed.type === 'youtube') {
-        return `https://www.youtube.com/embed/${parsed.id}?playsinline=1&rel=0&modestbranding=1`;
+        return `https://www.youtube.com/embed/${parsed.id}?playsinline=1&autoplay=1&rel=0&modestbranding=1`;
       }
       if (parsed.type === 'tiktok') {
         return `https://www.tiktok.com/embed/v2/${parsed.id}`;
       }
+      if (parsed.type === 'instagram') {
+        return `https://www.instagram.com/p/${parsed.id}/embed/`;
+      }
       return parsed.url;
+    }
+
+    function getLinkType(parsed) {
+      if (parsed.type === 'tiktok-short' || parsed.type === 'generic') return 'external';
+      if (parsed.type === 'direct') return 'direct';
+      return 'embed'; // youtube, tiktok, instagram
     }
 
     async function saveLink() {
@@ -601,17 +615,20 @@
       if (!url) { showToast('Please paste a URL'); return; }
 
       const parsed = parseVideoUrl(url);
-      const title = document.getElementById('link-title').value.trim() || (parsed.type === 'youtube' ? 'YouTube Video' : parsed.type === 'tiktok' ? 'TikTok' : 'Video');
+      const kindLabel = { youtube: 'YouTube', tiktok: 'TikTok', 'tiktok-short': 'TikTok', instagram: 'Reel', direct: 'Video', generic: 'Video' };
+      const title = document.getElementById('link-title').value.trim() || (kindLabel[parsed.type] || 'Video');
+
+      const behavior = getLinkType(parsed);
 
       const video = {
         id: Date.now() + '-' + Math.random().toString(36).slice(2, 9),
         title: title,
-        tag: parsed.type === 'youtube' ? '' : parsed.type === 'tiktok' ? 'TikTok' : '',
+        tag: parsed.type === 'tiktok' || parsed.type === 'tiktok-short' ? 'TikTok' : parsed.type === 'instagram' ? 'Reel' : '',
         liked: false,
         source: 'link',
-        linkType: parsed.type,
+        linkType: behavior,  // 'embed', 'direct', or 'external'
         linkUrl: url,
-        embedUrl: getEmbedUrl(parsed),
+        embedUrl: behavior === 'embed' ? getEmbedUrl(parsed) : url,
         order: videos.length,
         lastPosition: 0
       };
@@ -791,17 +808,28 @@
 
         const isLink = v.source === 'link';
 
-        if (isLink && v.linkType !== 'direct') {
-          // YouTube or TikTok — lazy-load: show placeholder, load iframe on tap
-          const thumbUrl = v.linkType === 'youtube'
-            ? `https://img.youtube.com/vi/${escapeHtml(v.embedUrl.split('/embed/')[1].split('?')[0])}/hqdefault.jpg`
-            : '';
-
+        if (isLink && v.linkType === 'embed') {
+          // YouTube / TikTok / Instagram — load iframe directly (autoplay)
           slide.innerHTML = `
-            <div class="embed-placeholder" data-embed-url="${escapeHtml(v.embedUrl)}">
-              ${thumbUrl ? `<img class="thumb" src="${thumbUrl}" alt="Thumbnail" loading="lazy">` : ''}
-              <div class="play-btn">&#9654;</div>
-              <span class="embed-label">Tap to load ${v.linkType === 'youtube' ? 'YouTube' : 'TikTok'}</span>
+            <iframe src="${escapeHtml(v.embedUrl)}"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              allowfullscreen playsinline></iframe>
+            <div class="video-title">
+              <span>${escapeHtml(v.title)}</span>
+              ${v.tag ? `<div class="tag">${escapeHtml(v.tag)}</div>` : ''}
+            </div>
+            <div class="actions">
+              <button onclick="toggleLike('${v.id}')" class="${v.liked ? 'liked' : ''}" title="Like">&#9829;</button>
+              <button onclick="openEditModal('${v.id}')" title="Edit">&#9998;</button>
+              <button onclick="removeVideo('${v.id}')" title="Delete">&#10005;</button>
+            </div>
+          `;
+        } else if (isLink && v.linkType === 'external') {
+          // TikTok short links, generic URLs — can't embed, show card with Open button
+          slide.innerHTML = `
+            <div class="embed-placeholder" onclick="window.open('${escapeHtml(v.linkUrl)}', '_blank')">
+              <div class="play-btn">&#8599;</div>
+              <span class="embed-label">Tap to open in browser</span>
             </div>
             <div class="video-title">
               <span>${escapeHtml(v.title)}</span>
@@ -813,18 +841,6 @@
               <button onclick="removeVideo('${v.id}')" title="Delete">&#10005;</button>
             </div>
           `;
-
-          // Tap placeholder to load iframe
-          const placeholder = slide.querySelector('.embed-placeholder');
-          placeholder.addEventListener('click', () => {
-            const embedUrl = placeholder.dataset.embedUrl;
-            const iframe = document.createElement('iframe');
-            iframe.src = embedUrl;
-            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen';
-            iframe.allowFullscreen = true;
-            iframe.setAttribute('playsinline', '');
-            placeholder.replaceWith(iframe);
-          });
         } else {
           // Local file or direct video link
           let src;
@@ -836,7 +852,7 @@
           }
 
           slide.innerHTML = `
-            <video src="${src}" loop playsinline preload="metadata" ${isLink ? 'crossorigin="anonymous"' : ''}></video>
+            <video src="${src}" loop playsinline preload="metadata"></video>
             <div class="play-icon">&#9654;</div>
             <div class="video-title">
               <span>${escapeHtml(v.title)}</span>
@@ -851,6 +867,27 @@
           `;
 
           const video = slide.querySelector('video');
+
+          // If link video fails to load, show Open in browser fallback
+          if (isLink) {
+            video.addEventListener('error', () => {
+              slide.innerHTML = `
+                <div class="embed-placeholder" onclick="window.open('${escapeHtml(v.linkUrl)}', '_blank')">
+                  <div class="play-btn">&#8599;</div>
+                  <span class="embed-label">Can't play here — tap to open in browser</span>
+                </div>
+                <div class="video-title">
+                  <span>${escapeHtml(v.title)}</span>
+                  ${v.tag ? `<div class="tag">${escapeHtml(v.tag)}</div>` : ''}
+                </div>
+                <div class="actions">
+                  <button onclick="toggleLike('${v.id}')" class="${v.liked ? 'liked' : ''}" title="Like">&#9829;</button>
+                  <button onclick="openEditModal('${v.id}')" title="Edit">&#9998;</button>
+                  <button onclick="removeVideo('${v.id}')" title="Delete">&#10005;</button>
+                </div>
+              `;
+            });
+          }
 
           // Tap to play/pause
           video.addEventListener('click', () => {
