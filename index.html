@@ -852,7 +852,7 @@
           }
 
           slide.innerHTML = `
-            <video src="${src}" loop playsinline preload="metadata"></video>
+            <video src="${src}" loop playsinline preload="auto"></video>
             <div class="play-icon">&#9654;</div>
             <div class="video-title">
               <span>${escapeHtml(v.title)}</span>
@@ -910,58 +910,53 @@
               slide.querySelector('.progress-bar .fill').style.width = pct + '%';
             }
           });
-
-          // Save position on pause
-          video.addEventListener('pause', () => {
-            v.lastPosition = video.currentTime;
-            saveVideo(v);
-          });
         }
 
         feed.appendChild(slide);
       });
 
       updateCounter();
-      autoplayVisible();
+      setupObserver();
     }
 
-    // ── Scroll / Autoplay ──
-    let scrollTimer;
-    feed.addEventListener('scroll', () => {
-      clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(() => {
-        autoplayVisible();
-        updateCounter();
-        saveScrollPosition();
-      }, 150);
-    });
+    // ── IntersectionObserver for reliable autoplay ──
+    let slideObserver = null;
 
-    function autoplayVisible() {
-      const slides = document.querySelectorAll('.slide');
-      slides.forEach((slide, i) => {
-        const rect = slide.getBoundingClientRect();
-        const video = slide.querySelector('video');
-        const visible = rect.top >= -100 && rect.top < window.innerHeight / 2;
+    function setupObserver() {
+      if (slideObserver) slideObserver.disconnect();
 
-        // Transition effect: active slide scales up and fades in
-        if (visible) {
-          slide.classList.add('active');
-          currentIndex = i;
-        } else {
-          slide.classList.remove('active');
-        }
+      slideObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          const slide = entry.target;
+          const i = parseInt(slide.dataset.index);
+          const video = slide.querySelector('video');
 
-        if (!video) return; // iframe embed — no autoplay needed
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+            // Slide is now the active one
+            slide.classList.add('active');
+            currentIndex = i;
+            updateCounter();
+            saveScrollPosition();
 
-        if (visible) {
-          if (videos[i] && videos[i].lastPosition) {
-            video.currentTime = videos[i].lastPosition;
+            if (video) {
+              // Restart from beginning every time
+              video.currentTime = 0;
+              video.play().catch(() => {});
+            }
+          } else {
+            slide.classList.remove('active');
+            if (video) {
+              video.pause();
+              video.currentTime = 0; // Reset so next scroll starts fresh
+            }
           }
-          video.play().catch(() => {});
-        } else {
-          video.pause();
-        }
+        });
+      }, {
+        root: feed,
+        threshold: [0, 0.6, 1]
       });
+
+      document.querySelectorAll('.slide').forEach(slide => slideObserver.observe(slide));
     }
 
     function updateCounter() {
@@ -984,7 +979,6 @@
             slides[idx].scrollIntoView();
             currentIndex = idx;
             updateCounter();
-            autoplayVisible();
           }, 100);
         }
       }
